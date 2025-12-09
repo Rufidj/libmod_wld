@@ -17,7 +17,8 @@ static WLD_Region_Optimized optimized_regions[MAX_REGIONS];
 static WLD_Wall *wall_ptrs[MAX_WALLS];
 
 // fov configurable WLD
-static float wld_angle_step = 0.003f;
+static float wld_angle_step = 0.005f;
+static float wld_focal_length = 180.0f; // 0.9 / 0.005
 
 // Caché espacial para point_in_region()  
 #define CACHE_SIZE 1024  
@@ -145,6 +146,15 @@ typedef struct {
 #ifndef M_PI_2
 #define M_PI_2 1.57079632679f
 #endif
+
+// Forward declarations
+void export_map_to_text(WLD_Map *map, const char *filename);
+void analyze_wall_coordinates(WLD_Map *map);
+int wld_process_geometry(FILE *fichero, WLD_Map *map);
+void wld_assign_regions_simple(WLD_Map *map, int target_region);
+void wld_build_sectors(WLD_Map *map);
+void validate_and_fix_portals(WLD_Map *map);
+void debug_current_portals(WLD_Map *map);
 
 /* Configurar cámara 3D - Original */
 int64_t libmod_wld_set_camera(INSTANCE *my, int64_t *params)  
@@ -1149,7 +1159,7 @@ void render_floor_and_ceiling(WLD_Map *map, WLD_Region *region, int col,
                   
                 float height_diff = cam_z - region->ceil_height;  
                 // CORRECCIÓN FISHEYE: Usar distancia corregida
-                float ceil_distance = (height_diff * 300.0f) / y_diff;  
+                float ceil_distance = (height_diff * wld_focal_length) / y_diff;  
                 float corrected_distance = ceil_distance / cos_angle;
                   
                 if (corrected_distance < 0.1f) continue;  
@@ -1194,7 +1204,7 @@ void render_floor_and_ceiling(WLD_Map *map, WLD_Region *region, int col,
                   
                 float height_diff = cam_z - region->floor_height;  
                 // CORRECCIÓN FISHEYE: Usar distancia corregida
-                float floor_distance = (height_diff * 300.0f) / y_diff;  
+                float floor_distance = (height_diff * wld_focal_length) / y_diff;  
                 float corrected_distance = floor_distance / cos_angle;
                   
                 if (corrected_distance < 0.1f) continue;  
@@ -1243,7 +1253,7 @@ void render_wall_column(WLD_Map *map, WLD_Wall *wall, int region_idx,
     if (corrected_distance < 0.1f) corrected_distance = 0.1f;
 
     // Calcular altura proyectada usando distancia corregida
-    float t1 = 300.0f / corrected_distance;
+    float t1 = wld_focal_length / corrected_distance;
     float t_floor = (cam_z - region->floor_height);
     float t_ceil = (cam_z - region->ceil_height);
     
@@ -1480,7 +1490,7 @@ void render_wld(WLD_Map *map, int screen_w, int screen_h)
                     int open_ceil = (current->ceil_height < adjacent->ceil_height) ? current->ceil_height : adjacent->ceil_height;  
                       
                     // Proyectar a pantalla usando distancia corregida
-                    float t1 = 300.0f / corrected_distance;  
+                    float t1 = wld_focal_length / corrected_distance;  
                       
                     float t_floor = (camera.z - open_floor);  
                     float t_ceil = (camera.z - open_ceil);  
@@ -1582,8 +1592,18 @@ int64_t libmod_wld_render_wld_3d(INSTANCE *my, int64_t *params) {
         float new_fov = *(float*)&params[2];  
         if (new_fov >= 0.001f && new_fov <= 0.01f) {  
             wld_angle_step = new_fov;  
+            wld_focal_length = 0.9f / wld_angle_step;
         }  
-    }  
+    } else {
+        // Si no hay parámetro explícito, usar camera.fov
+        // camera.fov está en grados (ej: 60.0)
+        // wld_angle_step es radianes por columna
+        if (camera.fov > 0.0f && width > 0) {
+             float fov_rad = camera.fov * (M_PI / 180.0f);
+             wld_angle_step = fov_rad / (float)width;
+             wld_focal_length = 0.9f / wld_angle_step;
+        }
+    }
       
     if (!wld_map.loaded) {  
         printf("ERROR: No hay mapa WLD cargado\n");  
@@ -1872,10 +1892,42 @@ void wld_build_sectors(WLD_Map *map)
     for (int i = 0; i < map->num_walls; i++) {  
         WLD_Wall *wall = map->walls[i];  
         if (wall->back_region == -1 && wall->front_region >= 0) {  
-            int xm = (map->points[wall->p1]->x + map->points[wall->p2]->x) / 2;  
-            int ym = (map->points[wall->p1]->y + map->points[wall->p2]->y) / 2;  
-              
-            int region_back = wld_find_region(map, xm, ym, wall->front_region);  
+            // Calcular vector de la pared
+            float dx = map->points[wall->p2]->x - map->points[wall->p1]->x;
+            float dy = map->points[wall->p2]->y - map->points[wall->p1]->y;
+            float len = sqrtf(dx*dx + dy*dy);
+            
+            int region_back = -1;
+            
+            if (len > 0.001f) {
+                // Normalizar y rotar 90 grados para obtener la normal
+                float nx = -dy / len;
+                float ny = dx / len;
+                
+                // Punto medio
+                float mid_x = (map->points[wall->p1]->x + map->points[wall->p2]->x) / 2.0f;
+                float mid_y = (map->points[wall->p1]->y + map->points[wall->p2]->y) / 2.0f;
+                
+                // Probar punto desplazado en dirección de la normal (hacia "adentro" o "afuera")
+                // Probamos ambos lados para asegurar
+                float offset = 2.0f; // 2 unidades de desplazamiento
+                
+                // Prueba 1: Lado A
+                int r1 = wld_find_region(map, mid_x + nx * offset, mid_y + ny * offset, wall->front_region);
+                if (r1 != -1) region_back = r1;
+                
+                // Prueba 2: Lado B (si no encontró en A)
+                if (region_back == -1) {
+                    int r2 = wld_find_region(map, mid_x - nx * offset, mid_y - ny * offset, wall->front_region);
+                    if (r2 != -1) region_back = r2;
+                }
+            } else {
+                // Fallback para paredes de longitud 0 (no debería pasar)
+                int xm = (map->points[wall->p1]->x + map->points[wall->p2]->x) / 2;  
+                int ym = (map->points[wall->p1]->y + map->points[wall->p2]->y) / 2; 
+                region_back = wld_find_region(map, xm, ym, wall->front_region);
+            }
+
             if (region_back != -1) {  
                 wall->back_region = region_back;  
                 wall->type = 1; // Portal  
@@ -1885,11 +1937,10 @@ void wld_build_sectors(WLD_Map *map)
                 wall->texture_bot = wall->texture;
                 
                 wall->texture = 0; // Transparente  
-
             }  
         }  
     }  
-      
+    
     printf("DEBUG: Portales detectados y configurados como transparentes\n");  
 }
 
@@ -1997,6 +2048,7 @@ int64_t libmod_wld_set_wld_fov(INSTANCE *my, int64_t *params) {
     }  
       
     wld_angle_step = new_fov;  
+    wld_focal_length = 0.9f / wld_angle_step;
     return 1;  
 }
 
@@ -2149,7 +2201,7 @@ void render_complex_wall_section(WLD_Map *map, WLD_Wall *wall, WLD_Region *regio
     if (corrected_distance < 0.1f) corrected_distance = 0.1f;
 
     // Factor de proyección VPE      
-    float t1 = 300.0f / corrected_distance;      
+    float t1 = wld_focal_length / corrected_distance;      
           
     // Calcular alturas proyectadas correctamente (Y=0 arriba)      
     float curr_floor_t = (cam_z - region->floor_height);      

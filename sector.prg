@@ -31,9 +31,9 @@ BEGIN
     end    
     
     // Configurar cámara inicial  
-   WLD_SET_CAMERA(1072, 7800, 1024, 0, 0, 60000); // camara original    
+   //WLD_SET_CAMERA(1072, 7800, 1024, 0, 0, 60000); // camara original    
    // WLD_SET_CAMERA(5300, 5300, 1024, 0, 0, 60000);     
-    //WLD_SET_CAMERA(4500, 4200, 1024, 0, 0, 60000); // subterraneo    
+    WLD_SET_CAMERA(4500, 4200, 600, 0, 0, 60000); // subterraneo    
     //WLD_SET_CAMERA(5300, 2400, 1024, 0, 0, 60000); // lava 
     //WLD_SET_CAMERA(15300, 13400, 300, 0, 0, 60000); //test2 
     wld_display();    
@@ -50,8 +50,8 @@ BEGIN
         if (key(_up)) WLD_LOOK_VERTICAL(1); end    
         if (key(_down)) WLD_LOOK_VERTICAL(-1); end    
     
-        // if (key(_q)) WLD_ADJUST_HEIGHT(-1); end    
-        // if (key(_e)) WLD_ADJUST_HEIGHT(1); end    
+        if (key(_q)) WLD_ADJUST_HEIGHT(-1); end    
+        if (key(_e)) WLD_ADJUST_HEIGHT(1); end    
     
         // NUEVO: Cambiar FOV con teclas 1, 2, 3  
         if (key(_1))    

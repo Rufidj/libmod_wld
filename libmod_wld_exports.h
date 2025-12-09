@@ -27,7 +27,7 @@ FUNC("WLD_STRAFE_LEFT", "I", TYPE_INT, libmod_wld_strafe_left),
 FUNC("WLD_STRAFE_RIGHT", "I", TYPE_INT, libmod_wld_strafe_right), 
 FUNC("WLD_LOOK_HORIZONTAL", "I", TYPE_INT, libmod_wld_look_horizontal),  
 FUNC("WLD_LOOK_VERTICAL", "I", TYPE_INT, libmod_wld_look_vertical),  
-FUNC("WLD_AJUST_HEIGHT", "I", TYPE_INT, libmod_wld_ajust_height),
+FUNC("WLD_ADJUST_HEIGHT", "I", TYPE_INT, libmod_wld_ajust_height),
 
 // Mapas DMAP (tile-based)  
 FUNC("GET_TEX_IMAGE", "I", TYPE_INT, get_tex_image),
