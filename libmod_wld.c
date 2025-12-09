@@ -1488,6 +1488,11 @@ void render_wld(WLD_Map *map, int screen_w, int screen_h)
                     // El suelo más alto y el techo más bajo definen la apertura  
                     int open_floor = (current->floor_height > adjacent->floor_height) ? current->floor_height : adjacent->floor_height;  
                     int open_ceil = (current->ceil_height < adjacent->ceil_height) ? current->ceil_height : adjacent->ceil_height;  
+                    
+                    // FIX: Si el portal está cerrado (suelo >= techo), no dibujar nada a través de él
+                    if (open_floor >= open_ceil) {
+                        break; // Detener renderizado de esta columna (pared sólida visualmente)
+                    }
                       
                     // Proyectar a pantalla usando distancia corregida
                     float t1 = wld_focal_length / corrected_distance;  
@@ -1498,18 +1503,40 @@ void render_wld(WLD_Map *map, int screen_w, int screen_h)
                     int screen_floor = (screen_h/2.0f) + t_floor * t1;  
                     int screen_ceil = (screen_h/2.0f) + t_ceil * t1;  
                       
-                    // Asegurar orden (techo arriba, suelo abajo)  
-                    if (screen_ceil > screen_floor) {  
-                        int temp = screen_ceil; screen_ceil = screen_floor; screen_floor = temp;  
-                    }  
+                    // Asegurar orden (techo arriba, suelo abajo) - YA NO ES NECESARIO SWAP PORQUE VALIDAMOS ARRIBA
+                    // Pero mantenemos la lógica de renderizado normal
                       
                     // Clampear a pantalla  
                     if (screen_ceil < 0) screen_ceil = 0;  
                     if (screen_floor >= screen_h) screen_floor = screen_h - 1;  
                       
                     // Actualizar clips (intersección con ventana actual)  
+                    // IMPORTANTE: Para evitar líneas azules, debemos asegurarnos de que los clips se actualicen
+                    // exactamente donde termina la pared dibujada.
+                    // render_complex_wall_section ya dibuja hasta open_ceil y desde open_floor si es necesario.
+                    
+                    // Ajustar clips para el siguiente sector
+                    // Usamos ceil/floor para definir la nueva ventana
                     if (screen_ceil > clip_top) clip_top = screen_ceil;  
-                    if (screen_floor < clip_bottom) clip_bottom = screen_floor;  
+                    if (screen_floor < clip_bottom) clip_bottom = screen_floor;
+                    
+                    // CORRECCIÓN LÍNEAS AZULES:
+                    // Si hay un gap de 1 pixel debido al redondeo, lo cerramos expandiendo el clip 1 pixel
+                    // Esto asume que render_complex_wall_section dibujó "de más" o "de menos" por un pixel
+                    // Pero es más seguro asegurar que la ventana se cierra exactamente donde empieza el hueco.
+                    
+                    // Forzar que los clips sean consistentes con lo que se dibujó
+                    // (render_complex_wall_section usa lógica similar para dibujar top/bot)
+                    
+                    // Si el portal es muy estrecho, podría cerrarse
+                    if (clip_top > clip_bottom) {
+                        // Intentar recuperar 1 pixel si están adyacentes (caso borde)
+                        if (clip_top == clip_bottom + 1) {
+                             clip_top = clip_bottom; 
+                        } else {
+                             break;
+                        }
+                    }
                       
                     // Si la ventana se cierra, dejar de renderizar  
                     if (clip_top > clip_bottom) {  
@@ -1887,6 +1914,90 @@ void wld_build_sectors(WLD_Map *map)
             }  
         }  
     }  
+
+    // 2.5. Búsqueda GEOMÉTRICA (Fuzzy Match) para vértices duplicados
+    // Esto arregla casos donde el mapa tiene vértices duplicados (misma posición, distinto ID)
+    printf("DEBUG: Buscando portales por coincidencia geométrica (fuzzy)...\n");
+    for (int i = 0; i < map->num_walls; i++) {
+        WLD_Wall *wall1 = map->walls[i];
+        if (!wall1 || wall1->back_region != -1) continue;
+
+        for (int j = i + 1; j < map->num_walls; j++) {
+            WLD_Wall *wall2 = map->walls[j];
+            if (!wall2 || wall2->back_region != -1) continue;
+
+            // Deben estar en regiones diferentes
+            if (wall1->front_region == wall2->front_region) continue;
+
+            // Coordenadas de los puntos
+            float x1_a = map->points[wall1->p1]->x;
+            float y1_a = map->points[wall1->p1]->y;
+            float x2_a = map->points[wall1->p2]->x;
+            float y2_a = map->points[wall1->p2]->y;
+
+            float x1_b = map->points[wall2->p1]->x;
+            float y1_b = map->points[wall2->p1]->y;
+            float x2_b = map->points[wall2->p2]->x;
+            float y2_b = map->points[wall2->p2]->y;
+
+            // Verificar si coinciden invertidos (A.p1 ~ B.p2 Y A.p2 ~ B.p1)
+            float dist1 = sqrtf(powf(x1_a - x2_b, 2) + powf(y1_a - y2_b, 2));
+            float dist2 = sqrtf(powf(x2_a - x1_b, 2) + powf(y2_a - y1_b, 2));
+
+            if (dist1 < 1.0f && dist2 < 1.0f) {
+                // ¡COINCIDENCIA GEOMÉTRICA!
+                wall1->back_region = wall2->front_region;
+                wall2->back_region = wall1->front_region;
+                wall1->type = 1;
+                wall2->type = 1;
+                
+                // Asignar texturas (Smart Texture Assignment)
+                // Para wall1
+                wall1->texture_top = wall1->texture;
+                wall1->texture_bot = wall1->texture;
+                if (wall1->texture_top <= 0) {
+                     // Buscar en vecinos de wall1
+                     for (int k = 0; k < map->num_walls; k++) {
+                        if (map->walls[k]->front_region == wall1->front_region && map->walls[k]->texture > 0) {
+                            wall1->texture_top = map->walls[k]->texture;
+                            wall1->texture_bot = map->walls[k]->texture;
+                            break;
+                        }
+                    }
+                    // Fallback techo/suelo
+                    WLD_Region *front1 = map->regions[wall1->front_region];
+                    if (wall1->texture_top <= 0 && front1) {
+                        if (front1->ceil_tex > 0) wall1->texture_top = front1->ceil_tex;
+                        if (front1->floor_tex > 0) wall1->texture_bot = front1->floor_tex;
+                    }
+                }
+                if (wall1->texture_bot <= 0) wall1->texture_bot = wall1->texture_top;
+                wall1->texture = 0;
+
+                // Para wall2
+                wall2->texture_top = wall2->texture;
+                wall2->texture_bot = wall2->texture;
+                if (wall2->texture_top <= 0) {
+                     // Buscar en vecinos de wall2
+                     for (int k = 0; k < map->num_walls; k++) {
+                        if (map->walls[k]->front_region == wall2->front_region && map->walls[k]->texture > 0) {
+                            wall2->texture_top = map->walls[k]->texture;
+                            wall2->texture_bot = map->walls[k]->texture;
+                            break;
+                        }
+                    }
+                    // Fallback techo/suelo
+                    WLD_Region *front2 = map->regions[wall2->front_region];
+                    if (wall2->texture_top <= 0 && front2) {
+                        if (front2->ceil_tex > 0) wall2->texture_top = front2->ceil_tex;
+                        if (front2->floor_tex > 0) wall2->texture_bot = front2->floor_tex;
+                    }
+                }
+                if (wall2->texture_bot <= 0) wall2->texture_bot = wall2->texture_top;
+                wall2->texture = 0;
+            }
+        }
+    }
       
     // 3. Para paredes sin back_region, buscar región adyacente  
     for (int i = 0; i < map->num_walls; i++) {  
@@ -1899,45 +2010,95 @@ void wld_build_sectors(WLD_Map *map)
             
             int region_back = -1;
             
+            // Punto medio (para fallback y cálculo)
+            float mid_x = (map->points[wall->p1]->x + map->points[wall->p2]->x) / 2.0f;
+            float mid_y = (map->points[wall->p1]->y + map->points[wall->p2]->y) / 2.0f;
+
             if (len > 0.001f) {
                 // Normalizar y rotar 90 grados para obtener la normal
                 float nx = -dy / len;
                 float ny = dx / len;
                 
-                // Punto medio
-                float mid_x = (map->points[wall->p1]->x + map->points[wall->p2]->x) / 2.0f;
-                float mid_y = (map->points[wall->p1]->y + map->points[wall->p2]->y) / 2.0f;
+                // Puntos a probar: 10%, 50%, 90%
+                float offsets_t[] = {0.5f, 0.1f, 0.9f};
+                // Distancias moderadas (2 y 8 unidades)
+                float dist_offsets[] = {2.0f, 8.0f};
                 
-                // Probar punto desplazado en dirección de la normal (hacia "adentro" o "afuera")
-                // Probamos ambos lados para asegurar
-                float offset = 2.0f; // 2 unidades de desplazamiento
+                bool found = false;
                 
-                // Prueba 1: Lado A
-                int r1 = wld_find_region(map, mid_x + nx * offset, mid_y + ny * offset, wall->front_region);
-                if (r1 != -1) region_back = r1;
-                
-                // Prueba 2: Lado B (si no encontró en A)
-                if (region_back == -1) {
-                    int r2 = wld_find_region(map, mid_x - nx * offset, mid_y - ny * offset, wall->front_region);
-                    if (r2 != -1) region_back = r2;
+                for (int d = 0; d < 2; d++) {
+                    float dist_offset = dist_offsets[d];
+                    
+                    for (int k = 0; k < 3; k++) {
+                        float t = offsets_t[k];
+                        float px = map->points[wall->p1]->x + dx * t;
+                        float py = map->points[wall->p1]->y + dy * t;
+                        
+                        // Prueba 1: Lado A (Normal positiva)
+                        int r = wld_find_region(map, px + nx * dist_offset, py + ny * dist_offset, wall->front_region);
+                        if (r != -1) {
+                            region_back = r;
+                            found = true;
+                            break;
+                        }
+                        
+                        // Prueba 2: Lado B (Normal negativa)
+                        r = wld_find_region(map, px - nx * dist_offset, py - ny * dist_offset, wall->front_region);
+                        if (r != -1) {
+                            region_back = r;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (found) break;
                 }
-            } else {
-                // Fallback para paredes de longitud 0 (no debería pasar)
-                int xm = (map->points[wall->p1]->x + map->points[wall->p2]->x) / 2;  
-                int ym = (map->points[wall->p1]->y + map->points[wall->p2]->y) / 2; 
-                region_back = wld_find_region(map, xm, ym, wall->front_region);
+            }
+            
+            // FALLBACK: Si el método robusto falló, intentar el método original (punto medio exacto)
+            if (region_back == -1) {
+                region_back = wld_find_region(map, mid_x, mid_y, wall->front_region);
             }
 
-            if (region_back != -1) {  
+            if (region_back != -1) {
+                // SIEMPRE crear el portal, incluso si está "cerrado" verticalmente.
+                // El motor de renderizado se encargará de hacer clipping correcto.
+                // Esto evita que aparezcan paredes azules (cielo) cuando hay un portal cerrado.
+                
                 wall->back_region = region_back;  
                 wall->type = 1; // Portal  
                 
-                // Asignar texturas para geometría compleja (usar textura de la pared)
+                // Asignar texturas para geometría compleja
                 wall->texture_top = wall->texture;
                 wall->texture_bot = wall->texture;
                 
-                wall->texture = 0; // Transparente  
-            }  
+                // BÚSQUEDA INTELIGENTE DE TEXTURA
+                // Si la pared no tenía textura (era invisible/azul), buscar una de un vecino
+                if (wall->texture_top <= 0) {
+                    WLD_Region *front = map->regions[wall->front_region];
+                    
+                    // 1. Intentar buscar otra pared en la misma región que tenga textura
+                    for (int k = 0; k < map->num_walls; k++) {
+                        if (map->walls[k]->front_region == wall->front_region && map->walls[k]->texture > 0) {
+                            wall->texture_top = map->walls[k]->texture;
+                            wall->texture_bot = map->walls[k]->texture;
+                            break;
+                        }
+                    }
+                    
+                    // 2. Si falló, usar texturas de suelo/techo si están disponibles
+                    if (wall->texture_top <= 0 && front) {
+                        if (front->ceil_tex > 0) wall->texture_top = front->ceil_tex;
+                        if (front->floor_tex > 0) wall->texture_bot = front->floor_tex;
+                    }
+                }
+                
+                // Asegurar que bot tenga algo si top tiene algo
+                if (wall->texture_bot <= 0) wall->texture_bot = wall->texture_top;
+                
+                wall->texture = 0; // Transparente (el agujero del portal)
+            }
+            
+
         }  
     }  
     
