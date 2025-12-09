@@ -174,6 +174,61 @@ int64_t libmod_wld_set_camera(INSTANCE *my, int64_t *params)
 
 // Movimiento de camara
 
+int64_t libmod_wld_look_horizontal(INSTANCE *my, int64_t *params)  
+{  
+    float delta = (float)params[0];  
+    camera.angle += delta * wld_mouse_sensitivity / 1000.0f;  
+    return 1;  
+}
+
+int64_t libmod_wld_look_vertical(INSTANCE *my, int64_t *params)  
+{  
+    float delta = (float)params[0];  
+    camera.pitch -= delta * wld_mouse_sensitivity / 1000.0f;  
+      
+    // Limitar pitch para evitar volteo de cámara  
+    const float max_pitch = M_PI_2 * 0.99f;  
+    if (camera.pitch > max_pitch)  
+        camera.pitch = max_pitch;  
+    if (camera.pitch < -max_pitch)  
+        camera.pitch = -max_pitch;  
+      
+    return 1;  
+}
+
+int64_t libmod_wld_ajust_height(INSTANCE *my, int64_t *params)  
+{  
+    float delta = (float)params[0];  
+    float new_z = camera.z + delta * wld_height_speed / 2.0f;  
+      
+    // Encontrar región actual para verificar límites  
+    int current_region = -1;  
+    for (int i = 0; i < wld_map.num_regions; i++) {  
+        if (point_in_region(camera.x, camera.y, i, &wld_map)) {  
+            current_region = i;  
+            break;  
+        }  
+    }  
+      
+    if (current_region != -1) {  
+        WLD_Region *region = wld_map.regions[current_region];  
+        if (region && region->active) {  
+            // Limitar entre piso y techo con margen  
+            if (new_z > region->floor_height + 10 && new_z < region->ceil_height - 10) {  
+                camera.z = new_z;  
+            }  
+        }  
+    } else {  
+        // Si no hay región, aplicar límite mínimo  
+        camera.z = new_z;  
+        if (camera.z < 20) camera.z = 20;  
+    }  
+      
+    return 1;  
+}
+
+
+
 int64_t libmod_wld_move_forward(INSTANCE *my, int64_t *params)  
 {  
     float speed = (params[0] > 0) ? (float)params[0] : wld_move_speed;  
@@ -1073,10 +1128,14 @@ void scan_walls_from_region(WLD_Map *map, int region_idx, float cam_x, float cam
 void render_floor_and_ceiling(WLD_Map *map, WLD_Region *region, int col,  
                                      int screen_w, int screen_h, int wall_top, int wall_bottom,  
                                      float cam_x, float cam_y, float cam_z, float distance,  
-                                     float fog_factor, int clip_top, int clip_bottom)  
+                                     float fog_factor, int clip_top, int clip_bottom, float angle_offset)  
 {  
     if (!region) return;  
       
+    // Precalcular coseno para corrección de fisheye
+    float cos_angle = cos(angle_offset);
+    if (cos_angle < 0.0001f) cos_angle = 0.0001f;
+
     // Renderizar techo (desde clip_top hasta wall_top)  
     int ceil_end = (wall_top < clip_bottom) ? wall_top : clip_bottom;
     int ceil_start = clip_top;
@@ -1089,12 +1148,14 @@ void render_floor_and_ceiling(WLD_Map *map, WLD_Region *region, int col,
                 if (fabs(y_diff) < 0.1f) continue;  
                   
                 float height_diff = cam_z - region->ceil_height;  
+                // CORRECCIÓN FISHEYE: Usar distancia corregida
                 float ceil_distance = (height_diff * 300.0f) / y_diff;  
+                float corrected_distance = ceil_distance / cos_angle;
                   
-                if (ceil_distance < 0.1f) continue;  
+                if (corrected_distance < 0.1f) continue;  
                   
-                float hit_x = cam_x + cos(camera.angle + ((col - screen_w/2.0f) * wld_angle_step)) * ceil_distance;  
-                float hit_y = cam_y + sin(camera.angle + ((col - screen_w/2.0f) * wld_angle_step)) * ceil_distance;  
+                float hit_x = cam_x + cos(camera.angle + angle_offset) * corrected_distance;  
+                float hit_y = cam_y + sin(camera.angle + angle_offset) * corrected_distance;  
                   
                 int tex_x = ((int)(hit_x * 0.5f)) % ceil_tex->width;  
                 int tex_y = ((int)(hit_y * 0.5f)) % ceil_tex->height;  
@@ -1108,7 +1169,7 @@ void render_floor_and_ceiling(WLD_Map *map, WLD_Region *region, int col,
                 uint8_t b = (pixel >> gPixelFormat->Bshift) & 0xFF;  
                   
                 // Fog para techo
-                float dist_factor = 1.0f - (ceil_distance / max_render_distance);
+                float dist_factor = 1.0f - (corrected_distance / max_render_distance);
                 if (dist_factor < 0.0f) dist_factor = 0.0f;
                 r = (uint8_t)(r * dist_factor);
                 g = (uint8_t)(g * dist_factor);
@@ -1132,12 +1193,14 @@ void render_floor_and_ceiling(WLD_Map *map, WLD_Region *region, int col,
                 if (fabs(y_diff) < 0.1f) continue;  
                   
                 float height_diff = cam_z - region->floor_height;  
+                // CORRECCIÓN FISHEYE: Usar distancia corregida
                 float floor_distance = (height_diff * 300.0f) / y_diff;  
+                float corrected_distance = floor_distance / cos_angle;
                   
-                if (floor_distance < 0.1f) continue;  
+                if (corrected_distance < 0.1f) continue;  
                   
-                float hit_x = cam_x + cos(camera.angle + ((col - screen_w/2.0f) * wld_angle_step)) * floor_distance;  
-                float hit_y = cam_y + sin(camera.angle + ((col - screen_w/2.0f) * wld_angle_step)) * floor_distance;  
+                float hit_x = cam_x + cos(camera.angle + angle_offset) * corrected_distance;  
+                float hit_y = cam_y + sin(camera.angle + angle_offset) * corrected_distance;  
                   
                 int tex_x = ((int)(hit_x * 0.5f)) % floor_tex->width;  
                 int tex_y = ((int)(hit_y * 0.5f)) % floor_tex->height;  
@@ -1151,7 +1214,7 @@ void render_floor_and_ceiling(WLD_Map *map, WLD_Region *region, int col,
                 uint8_t b = (pixel >> gPixelFormat->Bshift) & 0xFF;  
                   
                 // Fog para suelo
-                float dist_factor = 1.0f - (floor_distance / max_render_distance);
+                float dist_factor = 1.0f - (corrected_distance / max_render_distance);
                 if (dist_factor < 0.0f) dist_factor = 0.0f;
                 r = (uint8_t)(r * dist_factor);
                 g = (uint8_t)(g * dist_factor);
@@ -1174,8 +1237,13 @@ void render_wall_column(WLD_Map *map, WLD_Wall *wall, int region_idx,
     WLD_Region *region = map->regions[region_idx];
     if (!region) return;
     
-    // Calcular altura proyectada
-    float t1 = 300.0f / distance;
+    // CORRECCIÓN FISHEYE: Usar distancia corregida para la proyección vertical
+    float angle_offset = ((float)col - screen_w/2.0f) * wld_angle_step;
+    float corrected_distance = distance * cos(angle_offset);
+    if (corrected_distance < 0.1f) corrected_distance = 0.1f;
+
+    // Calcular altura proyectada usando distancia corregida
+    float t1 = 300.0f / corrected_distance;
     float t_floor = (cam_z - region->floor_height);
     float t_ceil = (cam_z - region->ceil_height);
     
@@ -1190,6 +1258,8 @@ void render_wall_column(WLD_Map *map, WLD_Wall *wall, int region_idx,
     // Guardar valores originales para suelo/techo
     int original_FTop = FTop;
     int original_FBot = FBot;
+    float original_height = (float)(FBot - FTop);
+    if (original_height < 1.0f) original_height = 1.0f;
     
     // Clampear a la pantalla y al clipping window
     int draw_top = (FTop < clip_top) ? clip_top : FTop;
@@ -1207,7 +1277,7 @@ void render_wall_column(WLD_Map *map, WLD_Wall *wall, int region_idx,
             float x2 = map->points[p2]->x;
             float y2 = map->points[p2]->y;
             
-            float angle_offset = ((float)col - screen_w/2.0f) * wld_angle_step;
+            // angle_offset ya calculado arriba
             float ray_dir_x = cos(camera.angle + angle_offset);
             float ray_dir_y = sin(camera.angle + angle_offset);
             
@@ -1227,7 +1297,7 @@ void render_wall_column(WLD_Map *map, WLD_Wall *wall, int region_idx,
         float fog_factor = 1.0f - (distance / max_render_distance);
         if (fog_factor < 0.0f) fog_factor = 0.0f;
         
-        render_wall_section(map, wall->texture, col, draw_top, draw_bot, wall_u, fog_factor, "WALL");
+        render_wall_section(map, wall->texture, col, draw_top, draw_bot, wall_u, fog_factor, "WALL", (float)FTop, original_height);
     }
     
     // Renderizar suelo y techo
@@ -1240,7 +1310,7 @@ void render_wall_column(WLD_Map *map, WLD_Wall *wall, int region_idx,
     int eff_bot = (original_FBot < clip_top) ? clip_top : (original_FBot > clip_bottom) ? clip_bottom : original_FBot;
     
     render_floor_and_ceiling(map, region, col, screen_w, screen_h, eff_top, eff_bot, 
-                            cam_x, cam_y, cam_z, distance, 1.0f, clip_top, clip_bottom);
+                            cam_x, cam_y, cam_z, distance, 1.0f, clip_top, clip_bottom, angle_offset);
 }
 
 // Función para calcular distancia entre dos puntos  
@@ -1333,13 +1403,17 @@ void render_wld(WLD_Map *map, int screen_w, int screen_h)
                 
             if (hit_wall && hit_distance < 999999.0f) {    
                 total_distance += hit_distance;    
+                
+                // CORRECCIÓN FISHEYE: Usar distancia corregida para proyecciones
+                float corrected_distance = total_distance * cos(angle_offset);
+                if (corrected_distance < 0.1f) corrected_distance = 0.1f;
                     
                 // NUEVO: Renderizar suelo y techo del sector actual  
                 WLD_Region *current_sector_region = map->regions[current_sector];  
                 if (current_sector_region && current_sector_region->active) {  
                     render_floor_and_ceiling(map, current_sector_region, col, screen_w, screen_h,  
                                             clip_top, clip_bottom, camera.x, camera.y, camera.z,  
-                                            total_distance, 1.0f, clip_top, clip_bottom);  
+                                            total_distance, 1.0f, clip_top, clip_bottom, angle_offset);  
                 }  
                     
                 // Si es pared sólida, renderizar y terminar    
@@ -1405,8 +1479,8 @@ void render_wld(WLD_Map *map, int screen_w, int screen_h)
                     int open_floor = (current->floor_height > adjacent->floor_height) ? current->floor_height : adjacent->floor_height;  
                     int open_ceil = (current->ceil_height < adjacent->ceil_height) ? current->ceil_height : adjacent->ceil_height;  
                       
-                    // Proyectar a pantalla  
-                    float t1 = 300.0f / total_distance;  
+                    // Proyectar a pantalla usando distancia corregida
+                    float t1 = 300.0f / corrected_distance;  
                       
                     float t_floor = (camera.z - open_floor);  
                     float t_ceil = (camera.z - open_ceil);  
@@ -1996,7 +2070,7 @@ void analyze_wall_coordinates(WLD_Map *map) {
 
 void render_wall_section(WLD_Map *map, int texture_index, int col,   
                         int y_start, int y_end, float wall_u, float fog_factor,   
-                        char *section_name)  
+                        char *section_name, float orig_top, float orig_height)  
 {  
     if (y_start >= y_end) return;  
       
@@ -2012,11 +2086,16 @@ void render_wall_section(WLD_Map *map, int texture_index, int col,
     if (tex_x < 0) tex_x = 0;  
     if (tex_x >= tex_graph->width) tex_x = tex_graph->width - 1;  
       
-    float wall_height = y_end - y_start;  
+    // float wall_height = y_end - y_start; // YA NO SE USA PARA MAPPING
       
     for (int y = y_start; y < y_end; y++) {  
-        float v = (float)(y - y_start) / wall_height;  
-        int tex_y = (int)(v * tex_graph->height) % tex_graph->height;  
+        // Usar altura original proyectada para el mapeo de textura
+        float v = (float)(y - orig_top) / orig_height;  
+        int tex_y = (int)(v * tex_graph->height) % tex_graph->height;
+        
+        // Clampear tex_y por seguridad
+        if (tex_y < 0) tex_y = 0;
+        if (tex_y >= tex_graph->height) tex_y = tex_graph->height - 1;
           
         uint32_t pixel = gr_get_pixel(tex_graph, tex_x, tex_y);  
           
@@ -2064,8 +2143,13 @@ void render_complex_wall_section(WLD_Map *map, WLD_Wall *wall, WLD_Region *regio
         return;      
     }      
           
+    // CORRECCIÓN FISHEYE: Usar distancia corregida
+    float angle_offset = ((float)col - screen_w/2.0f) * wld_angle_step;
+    float corrected_distance = hit_distance * cos(angle_offset);
+    if (corrected_distance < 0.1f) corrected_distance = 0.1f;
+
     // Factor de proyección VPE      
-    float t1 = 300.0f / hit_distance;      
+    float t1 = 300.0f / corrected_distance;      
           
     // Calcular alturas proyectadas correctamente (Y=0 arriba)      
     float curr_floor_t = (cam_z - region->floor_height);      
@@ -2088,10 +2172,10 @@ void render_complex_wall_section(WLD_Map *map, WLD_Wall *wall, WLD_Region *regio
     }      
           
     // Limitar a pantalla      
-    cf_y = (cf_y < 0) ? 0 : (cf_y >= screen_h) ? screen_h-1 : cf_y;      
-    cc_y = (cc_y < 0) ? 0 : (cc_y >= screen_h) ? screen_h-1 : cc_y;      
-    af_y = (af_y < 0) ? 0 : (af_y >= screen_h) ? screen_h-1 : af_y;      
-    ac_y = (ac_y < 0) ? 0 : (ac_y >= screen_h) ? screen_h-1 : ac_y;      
+    // cf_y = (cf_y < 0) ? 0 : (cf_y >= screen_h) ? screen_h-1 : cf_y;      
+    // cc_y = (cc_y < 0) ? 0 : (cc_y >= screen_h) ? screen_h-1 : cc_y;      
+    // af_y = (af_y < 0) ? 0 : (af_y >= screen_h) ? screen_h-1 : af_y;      
+    // ac_y = (ac_y < 0) ? 0 : (ac_y >= screen_h) ? screen_h-1 : ac_y;      
           
     // CORRECCIÓN: Calcular wall_u si no se proporcionó      
     if (wall_u == 0.0f) {      
@@ -2104,7 +2188,7 @@ void render_complex_wall_section(WLD_Map *map, WLD_Wall *wall, WLD_Region *regio
             float y2 = map->points[p2]->y;      
                   
             // Calcular punto de impacto del rayo      
-            float angle_offset = ((float)col - screen_w/2.0f) * 0.003f;      
+            // angle_offset ya calculado
             float ray_dir_x = cos(camera.angle + angle_offset);      
             float ray_dir_y = sin(camera.angle + angle_offset);      
                   
@@ -2128,10 +2212,13 @@ void render_complex_wall_section(WLD_Map *map, WLD_Wall *wall, WLD_Region *regio
         // Clampear con clips  
         int draw_start = (cc_y < clip_top) ? clip_top : cc_y;  
         int draw_end = (ac_y > clip_bottom) ? clip_bottom : ac_y;  
+        
+        float orig_height = (float)(ac_y - cc_y);
+        if (orig_height < 1.0f) orig_height = 1.0f;
           
         if (draw_start < draw_end) {  
             render_wall_section(map, wall->texture_top, col, draw_start, draw_end,      
-                           wall_u, fog_factor, "SUPERIOR");      
+                           wall_u, fog_factor, "SUPERIOR", (float)cc_y, orig_height);      
         }  
     }      
           
@@ -2142,12 +2229,15 @@ void render_complex_wall_section(WLD_Map *map, WLD_Wall *wall, WLD_Region *regio
     // Clampear mid con clips  
     int draw_mid_top = (mid_top < clip_top) ? clip_top : mid_top;  
     int draw_mid_bot = (mid_bot > clip_bottom) ? clip_bottom : mid_bot;  
+    
+    float mid_height = (float)(mid_bot - mid_top);
+    if (mid_height < 1.0f) mid_height = 1.0f;
       
     if (draw_mid_top < draw_mid_bot) {  
         if (wall->texture > 0) {  
             // Renderizar textura del portal si existe  
             render_wall_section(map, wall->texture, col, draw_mid_top, draw_mid_bot,    
-                           wall_u, fog_factor, "MEDIO");    
+                           wall_u, fog_factor, "MEDIO", (float)mid_top, mid_height);    
         }  
         // Si wall->texture == 0, NO renderizar nada aquí  
         // El raycasting continuará y mostrará el sector adyacente  
@@ -2158,10 +2248,13 @@ void render_complex_wall_section(WLD_Map *map, WLD_Wall *wall, WLD_Region *regio
         // Clampear con clips  
         int draw_start = (af_y < clip_top) ? clip_top : af_y;  
         int draw_end = (cf_y > clip_bottom) ? clip_bottom : cf_y;  
+        
+        float orig_height = (float)(cf_y - af_y);
+        if (orig_height < 1.0f) orig_height = 1.0f;
           
         if (draw_start < draw_end) {  
             render_wall_section(map, wall->texture_bot, col, draw_start, draw_end,      
-                           wall_u, fog_factor, "INFERIOR");      
+                           wall_u, fog_factor, "INFERIOR", (float)af_y, orig_height);      
         }  
     }      
           
@@ -2169,7 +2262,7 @@ void render_complex_wall_section(WLD_Map *map, WLD_Wall *wall, WLD_Region *regio
     // Usamos cc_y (techo proyectado) y cf_y (suelo proyectado) como límites  
     render_floor_and_ceiling(map, region, col, screen_w, screen_h,      
                             cc_y, cf_y, cam_x, cam_y, cam_z,      
-                            hit_distance, fog_factor, clip_top, clip_bottom);      
+                            hit_distance, fog_factor, clip_top, clip_bottom, angle_offset);      
 }
 
 

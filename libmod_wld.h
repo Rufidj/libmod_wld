@@ -204,8 +204,10 @@ static Uint8 sky_color_a = 255; // Alpha del cielo
 // Distancia de renderizado
 static float max_render_distance = 12000.0f;
 
-// Velocidad de movimiento por defecto  
-static float wld_move_speed = 10.0f;
+// Variables de control de sensibilidad  
+static float wld_mouse_sensitivity = 50.0f;  
+static float wld_move_speed = 10.0f;  
+static float wld_height_speed = 3.0f;
 
 
 
@@ -235,7 +237,7 @@ extern int64_t libmod_heightmap_render_wld_3d(INSTANCE *my, int64_t *params);
 extern void render_floor_and_ceiling(WLD_Map *map, WLD_Region *region, int col,  
                                      int screen_w, int screen_h, int wall_top, int wall_bottom,  
                                      float cam_x, float cam_y, float cam_z, float distance,  
-                                     float fog_factor, int clip_top, int clip_bottom); 
+                                     float fog_factor, int clip_top, int clip_bottom, float angle_offset); 
 extern void render_complex_wall_section(WLD_Map *map, WLD_Wall *wall, WLD_Region *region,  
                                         int region_idx, int col, int screen_w, int screen_h,  
                                         int y_start, int y_end, float wall_u, float fog_factor,  
@@ -243,11 +245,14 @@ extern void render_complex_wall_section(WLD_Map *map, WLD_Wall *wall, WLD_Region
                                         float hit_distance, int clip_top, int clip_bottom);
 extern void render_wall_section(WLD_Map *map, int texture_index, int col,   
                         int y_start, int y_end, float wall_u, float fog_factor,   
-                        char *section_name);
+                        char *section_name, float orig_top, float orig_height);
 extern void wld_build_wall_ptrs(WLD_Map *map);
 static bool vertices_equal(int32_t x1, int32_t y1, int32_t x2, int32_t y2) {  
     return x1 == x2 && y1 == y2;  
 }
+extern int64_t libmod_wld_look_horizontal(INSTANCE *my, int64_t *params);  
+extern int64_t libmod_wld_look_vertical(INSTANCE *my, int64_t *params);  
+extern int64_t libmod_wld_ajust_height(INSTANCE *my, int64_t *params);
 
 
 // Declaraciones de camara
