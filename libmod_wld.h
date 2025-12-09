@@ -204,6 +204,10 @@ static Uint8 sky_color_a = 255; // Alpha del cielo
 // Distancia de renderizado
 static float max_render_distance = 12000.0f;
 
+// Velocidad de movimiento por defecto  
+static float wld_move_speed = 10.0f;
+
+
 
 // Declaración por si no está en el header
 void gr_alpha_put_pixel(GRAPH *dest, int x, int y, uint32_t color, uint8_t alpha);
@@ -244,5 +248,10 @@ extern void wld_build_wall_ptrs(WLD_Map *map);
 static bool vertices_equal(int32_t x1, int32_t y1, int32_t x2, int32_t y2) {  
     return x1 == x2 && y1 == y2;  
 }
+
+
+// Declaraciones de camara
+
+extern int64_t libmod_heightmap_set_camera(INSTANCE *my, int64_t *params);   
 
 #endif

@@ -20,6 +20,12 @@ DLSYSFUNCS __bgdexport(libmod_wld, functions_exports)[] = {
 // funciones de camara para los sprites  
  FUNC("WLD_SET_CAMERA", "IIIIII", TYPE_INT, libmod_wld_set_camera),  
 
+//Funciones de movimiento de camara
+FUNC("WLD_MOVE_FORWARD", "I", TYPE_INT, libmod_wld_move_forward),    
+FUNC("WLD_MOVE_BACKWARD", "I", TYPE_INT, libmod_wld_move_backward),    
+FUNC("WLD_STRAFE_LEFT", "I", TYPE_INT, libmod_wld_strafe_left),    
+FUNC("WLD_STRAFE_RIGHT", "I", TYPE_INT, libmod_wld_strafe_right), 
+
 // Mapas DMAP (tile-based)  
 FUNC("GET_TEX_IMAGE", "I", TYPE_INT, get_tex_image),
 FUNC("LOAD_WLD", "SI", TYPE_INT, libmod_wld_load_wld),

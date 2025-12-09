@@ -172,6 +172,264 @@ int64_t libmod_wld_set_camera(INSTANCE *my, int64_t *params)
 }
 
 
+// Movimiento de camara
+
+int64_t libmod_wld_move_forward(INSTANCE *my, int64_t *params)  
+{  
+    float speed = (params[0] > 0) ? (float)params[0] : wld_move_speed;  
+    float dx = cosf(camera.angle) * speed / 1.5f;  
+    float dy = sinf(camera.angle) * speed / 1.5f;  
+      
+    float new_x = camera.x + dx;  
+    float new_y = camera.y + dy;  
+      
+    // Encontrar región actual  
+    int current_region = -1;  
+    for (int i = 0; i < wld_map.num_regions; i++) {  
+        if (point_in_region(camera.x, camera.y, i, &wld_map)) {  
+            current_region = i;  
+            break;  
+        }  
+    }  
+      
+    if (current_region == -1) return 0;  
+      
+    // Verificar colisión con paredes  
+    WLD_Region_Optimized *opt_region = &optimized_regions[current_region];  
+    bool collision = false;  
+      
+    for (int i = 0; i < opt_region->num_wall_ptrs; i++) {  
+        WLD_Wall *wall = opt_region->wall_ptrs[i];  
+        if (!wall) continue;  
+          
+        float x1 = wld_map.points[wall->p1]->x;  
+        float y1 = wld_map.points[wall->p1]->y;  
+        float x2 = wld_map.points[wall->p2]->x;  
+        float y2 = wld_map.points[wall->p2]->y;  
+          
+        float t = intersect_ray_segment(dx, dy, camera.x, camera.y, x1, y1, x2, y2);  
+          
+        if (t > 0 && t < 1.0f) {  
+            if (wall->back_region == -1) {  
+                collision = true;  
+                break;  
+            } else {  
+                WLD_Region *current = wld_map.regions[current_region];  
+                WLD_Region *adjacent = wld_map.regions[wall->back_region];  
+                  
+                int max_floor = (current->floor_height > adjacent->floor_height)   
+                    ? current->floor_height : adjacent->floor_height;  
+                int min_ceil = (current->ceil_height < adjacent->ceil_height)   
+                    ? current->ceil_height : adjacent->ceil_height;  
+                  
+                if (camera.z < max_floor || camera.z > min_ceil) {  
+                    collision = true;  
+                    break;  
+                }  
+            }  
+        }  
+    }  
+      
+    if (!collision) {  
+        camera.x = new_x;  
+        camera.y = new_y;  
+    }  
+      
+    return 1;  
+}
+
+int64_t libmod_wld_move_backward(INSTANCE *my, int64_t *params)  
+{  
+    float speed = (params[0] > 0) ? (float)params[0] : wld_move_speed;  
+    float dx = cosf(camera.angle + M_PI) * speed / 1.5f;  
+    float dy = sinf(camera.angle + M_PI) * speed / 1.5f;  
+      
+    float new_x = camera.x + dx;  
+    float new_y = camera.y + dy;  
+      
+    // Encontrar región actual  
+    int current_region = -1;  
+    for (int i = 0; i < wld_map.num_regions; i++) {  
+        if (point_in_region(camera.x, camera.y, i, &wld_map)) {  
+            current_region = i;  
+            break;  
+        }  
+    }  
+      
+    if (current_region == -1) return 0;  
+      
+    // Verificar colisión con paredes  
+    WLD_Region_Optimized *opt_region = &optimized_regions[current_region];  
+    bool collision = false;  
+      
+    for (int i = 0; i < opt_region->num_wall_ptrs; i++) {  
+        WLD_Wall *wall = opt_region->wall_ptrs[i];  
+        if (!wall) continue;  
+          
+        float x1 = wld_map.points[wall->p1]->x;  
+        float y1 = wld_map.points[wall->p1]->y;  
+        float x2 = wld_map.points[wall->p2]->x;  
+        float y2 = wld_map.points[wall->p2]->y;  
+          
+        float t = intersect_ray_segment(dx, dy, camera.x, camera.y, x1, y1, x2, y2);  
+          
+        if (t > 0 && t < 1.0f) {  
+            if (wall->back_region == -1) {  
+                collision = true;  
+                break;  
+            } else {  
+                WLD_Region *current = wld_map.regions[current_region];  
+                WLD_Region *adjacent = wld_map.regions[wall->back_region];  
+                  
+                int max_floor = (current->floor_height > adjacent->floor_height)   
+                    ? current->floor_height : adjacent->floor_height;  
+                int min_ceil = (current->ceil_height < adjacent->ceil_height)   
+                    ? current->ceil_height : adjacent->ceil_height;  
+                  
+                if (camera.z < max_floor || camera.z > min_ceil) {  
+                    collision = true;  
+                    break;  
+                }  
+            }  
+        }  
+    }  
+      
+    if (!collision) {  
+        camera.x = new_x;  
+        camera.y = new_y;  
+    }  
+      
+    return 1;  
+}
+
+int64_t libmod_wld_strafe_left(INSTANCE *my, int64_t *params)  
+{  
+    float speed = (params[0] > 0) ? (float)params[0] : wld_move_speed;  
+    float dx = cosf(camera.angle - M_PI_2) * speed / 2.0f;  
+    float dy = sinf(camera.angle - M_PI_2) * speed / 2.0f;  
+      
+    float new_x = camera.x + dx;  
+    float new_y = camera.y + dy;  
+      
+    // Encontrar región actual  
+    int current_region = -1;  
+    for (int i = 0; i < wld_map.num_regions; i++) {  
+        if (point_in_region(camera.x, camera.y, i, &wld_map)) {  
+            current_region = i;  
+            break;  
+        }  
+    }  
+      
+    if (current_region == -1) return 0;  
+      
+    // Verificar colisión con paredes  
+    WLD_Region_Optimized *opt_region = &optimized_regions[current_region];  
+    bool collision = false;  
+      
+    for (int i = 0; i < opt_region->num_wall_ptrs; i++) {  
+        WLD_Wall *wall = opt_region->wall_ptrs[i];  
+        if (!wall) continue;  
+          
+        float x1 = wld_map.points[wall->p1]->x;  
+        float y1 = wld_map.points[wall->p1]->y;  
+        float x2 = wld_map.points[wall->p2]->x;  
+        float y2 = wld_map.points[wall->p2]->y;  
+          
+        float t = intersect_ray_segment(dx, dy, camera.x, camera.y, x1, y1, x2, y2);  
+          
+        if (t > 0 && t < 1.0f) {  
+            if (wall->back_region == -1) {  
+                collision = true;  
+                break;  
+            } else {  
+                WLD_Region *current = wld_map.regions[current_region];  
+                WLD_Region *adjacent = wld_map.regions[wall->back_region];  
+                  
+                int max_floor = (current->floor_height > adjacent->floor_height)   
+                    ? current->floor_height : adjacent->floor_height;  
+                int min_ceil = (current->ceil_height < adjacent->ceil_height)   
+                    ? current->ceil_height : adjacent->ceil_height;  
+                  
+                if (camera.z < max_floor || camera.z > min_ceil) {  
+                    collision = true;  
+                    break;  
+                }  
+            }  
+        }  
+    }  
+      
+    if (!collision) {  
+        camera.x = new_x;  
+        camera.y = new_y;  
+    }  
+      
+    return 1;  
+}
+
+int64_t libmod_wld_strafe_right(INSTANCE *my, int64_t *params)  
+{  
+    float speed = (params[0] > 0) ? (float)params[0] : wld_move_speed;  
+    float dx = cosf(camera.angle + M_PI_2) * speed / 2.0f;  
+    float dy = sinf(camera.angle + M_PI_2) * speed / 2.0f;  
+      
+    float new_x = camera.x + dx;  
+    float new_y = camera.y + dy;  
+      
+    // Encontrar región actual  
+    int current_region = -1;  
+    for (int i = 0; i < wld_map.num_regions; i++) {  
+        if (point_in_region(camera.x, camera.y, i, &wld_map)) {  
+            current_region = i;  
+            break;  
+        }  
+    }  
+      
+    if (current_region == -1) return 0;  
+      
+    // Verificar colisión con paredes  
+    WLD_Region_Optimized *opt_region = &optimized_regions[current_region];  
+    bool collision = false;  
+      
+    for (int i = 0; i < opt_region->num_wall_ptrs; i++) {  
+        WLD_Wall *wall = opt_region->wall_ptrs[i];  
+        if (!wall) continue;  
+          
+        float x1 = wld_map.points[wall->p1]->x;  
+        float y1 = wld_map.points[wall->p1]->y;  
+        float x2 = wld_map.points[wall->p2]->x;  
+        float y2 = wld_map.points[wall->p2]->y;  
+          
+        float t = intersect_ray_segment(dx, dy, camera.x, camera.y, x1, y1, x2, y2);  
+          
+        if (t > 0 && t < 1.0f) {  
+            if (wall->back_region == -1) {  
+                collision = true;  
+                break;  
+            } else {  
+                WLD_Region *current = wld_map.regions[current_region];  
+                WLD_Region *adjacent = wld_map.regions[wall->back_region];  
+                  
+                int max_floor = (current->floor_height > adjacent->floor_height)   
+                    ? current->floor_height : adjacent->floor_height;  
+                int min_ceil = (current->ceil_height < adjacent->ceil_height)   
+                    ? current->ceil_height : adjacent->ceil_height;  
+                  
+                if (camera.z < max_floor || camera.z > min_ceil) {  
+                    collision = true;  
+                    break;  
+                }  
+            }  
+        }  
+    }  
+      
+    if (!collision) {  
+        camera.x = new_x;  
+        camera.y = new_y;  
+    }  
+      
+    return 1;  
+}
+
 
 
 GRAPH *get_tex_image(int index)     
