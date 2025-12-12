@@ -112,9 +112,14 @@ typedef struct {
 } WLD_Region;  // Total: 32 bytes  
 
 typedef struct {  
-    WLD_Region *original_region;  
-    WLD_Wall **wall_ptrs;  
-    int num_wall_ptrs;  
+    WLD_Region *original_region;
+    WLD_Wall **wall_ptrs;
+    int num_wall_ptrs;
+    int capacity;
+    
+    // Pre-computed nested sectors
+    int nested_regions[64];
+    int num_nested_regions;
 } WLD_Region_Optimized;
   
 #pragma pack(pop)

@@ -1033,9 +1033,22 @@ int64_t libmod_wld_test_render_buffer(INSTANCE *my, int64_t *params)
     return render_buffer->code;  
 }
 
-// Función auxiliar para verificar si punto está en región  
+// Función auxiliar para verificar si punto está en región
+// Caché espacial para point_in_region()  
 static int last_region_x = -999999, last_region_y = -999999;  
 static int last_region_result = -1;  
+static int last_region_cache[512];  
+static int last_region_cache_size = 0;  
+  
+// Variables globales para el mapa  
+static WLD_Map wld_map;  
+static int map_loaded = 0;  
+
+// NUEVO: Caché de regiones cercanas (calculado una vez por frame)
+static int nearby_regions_cache[256];
+static int nearby_regions_count = 0;
+static float last_cache_x = -99999.0f;
+static float last_cache_y = -99999.0f;
   
 int point_in_region(float x, float y, int region_idx, WLD_Map *map)  
 {  
@@ -1078,7 +1091,7 @@ void scan_walls_from_region(WLD_Map *map, int region_idx, float cam_x, float cam
     int num_visited = 0;  
     int regions_to_visit[256];  
     regions_to_visit[0] = region_idx;  
-    int num_to_visit = 1;  
+    int num_to_visit = 1;
       
     *hit_distance = 999999.0f;  
     *hit_wall = NULL;  
@@ -1098,6 +1111,30 @@ void scan_walls_from_region(WLD_Map *map, int region_idx, float cam_x, float cam
         }  
         if (already_visited) continue;  
         visited_regions[num_visited++] = current;  
+          
+        // NUEVO: Buscar sectores anidados que contengan el punto actual del rayo
+        // Esto permite detectar cajas/bidones a lo largo del camino
+        for (int i = 0; i < map->num_regions; i++) {
+            if (i == current) continue;
+            if (!map->regions[i] || !map->regions[i]->active) continue;
+            
+            // Verificar si ya está en la lista
+            int already_in_list = 0;
+            for (int j = 0; j < num_visited; j++) {
+                if (visited_regions[j] == i) {
+                    already_in_list = 1;
+                    break;
+                }
+            }
+            if (already_in_list) continue;
+            
+            // Verificar si esta región contiene el punto actual del rayo
+            if (point_in_region(cam_x, cam_y, i, map)) {
+                if (num_to_visit < 256) {
+                    regions_to_visit[num_to_visit++] = i;
+                }
+            }
+        }
           
         // Usar estructura optimizada  
         WLD_Region_Optimized *opt_region = &optimized_regions[current];  
@@ -1668,9 +1705,12 @@ void wld_build_wall_ptrs(WLD_Map *map)
                 wall_ptrs[ptr_index++] = map->walls[j];  
                 optimized_regions[i].num_wall_ptrs++;  
             }  
-        }  
-    }  
-}
+        }
+        
+        // Inicializar contador de sectores anidados a 0
+        optimized_regions[i].num_nested_regions = 0;
+    }
+}  
 
 
 
