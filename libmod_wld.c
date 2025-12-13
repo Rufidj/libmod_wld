@@ -1100,7 +1100,7 @@ void scan_walls_from_region(WLD_Map *map, int region_idx, float cam_x, float cam
     *adjacent_region = -1;  
       
     while (num_to_visit > 0) {  
-        int current = regions_to_visit[--num_to_visit];  
+        int current = regions_to_visit[--num_to_visit];  // LIFO: tomar del final
           
         // Verificar si ya visitamos  
         int already_visited = 0;  
@@ -1113,7 +1113,7 @@ void scan_walls_from_region(WLD_Map *map, int region_idx, float cam_x, float cam
         if (already_visited) continue;  
         visited_regions[num_visited++] = current;  
           
-        // Añadir regiones anidadas pre-calculadas
+        // Añadir regiones anidadas pre-calculadas (ahora con FIFO)
         WLD_Region_Optimized *opt_current = &optimized_regions[current];
         for (int i = 0; i < opt_current->num_nested_regions; i++) {
             int nested = opt_current->nested_regions[i];
@@ -1456,7 +1456,44 @@ void render_wld(WLD_Map *map, int screen_w, int screen_h)
                     render_floor_and_ceiling(map, current_sector_region, col, screen_w, screen_h,  
                                             clip_top, clip_bottom, camera.x, camera.y, camera.z,  
                                             total_distance, 1.0f, clip_top, clip_bottom, angle_offset);  
-                }  
+                }
+                
+                // Renderizar regiones anidadas visibles en esta columna
+                WLD_Region_Optimized *opt_sector = &optimized_regions[current_sector];
+                for (int n = 0; n < opt_sector->num_nested_regions; n++) {
+                    int nested_idx = opt_sector->nested_regions[n];
+                    
+                    // Lanzar rayo para ver si intersecta con esta región anidada
+                    WLD_Wall *nested_wall;
+                    int nested_hit_region, nested_adjacent;
+                    float nested_distance;
+                    
+                    scan_walls_from_region(map, nested_idx,
+                                          camera.x, camera.y,
+                                          ray_dir_x, ray_dir_y,
+                                          &nested_distance,
+                                          &nested_wall, &nested_hit_region, &nested_adjacent);
+                    
+                    if (nested_wall && nested_distance < total_distance && nested_distance > 0.001f) {
+                        // DEBUG: Solo para primera columna
+                        if (col == screen_w / 2) {
+                            printf("DEBUG col %d: Nested region %d found wall at distance %.2f (current: %.2f)\n",
+                                   col, nested_idx, nested_distance, total_distance);
+                        }
+                        
+                        // Esta región anidada está más cerca que la pared actual
+                        float nested_corrected = nested_distance * cos(angle_offset);
+                        if (nested_corrected < 0.1f) nested_corrected = 0.1f;
+                        
+                        render_wall_column(map, nested_wall, nested_hit_region, col,
+                                          screen_w, screen_h, camera.x, camera.y, camera.z,
+                                          nested_distance, clip_top, clip_bottom);
+                    } else if (col == screen_w / 2 && opt_sector->num_nested_regions > 0) {
+                        // DEBUG: Ver por qué no encuentra
+                        printf("DEBUG col %d: Nested region %d - wall=%p, dist=%.2f, total=%.2f\n",
+                               col, nested_idx, (void*)nested_wall, nested_distance, total_distance);
+                    }
+                }
                     
                 // Si es pared sólida, renderizar y terminar    
                 if (adjacent_region == -1) {    
