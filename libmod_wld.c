@@ -705,6 +705,7 @@ int64_t libmod_wld_load_wld(INSTANCE *my, int64_t *params)
     // SOLO construir punteros optimizados - SIN asignación de regiones estática  
     wld_build_wall_ptrs(&wld_map); 
     wld_assign_regions_simple(&wld_map, -1); 
+    wld_calculate_nested_regions(&wld_map);
     wld_build_sectors(&wld_map);
     validate_and_fix_portals(&wld_map);
     debug_current_portals(&wld_map);
@@ -1112,27 +1113,21 @@ void scan_walls_from_region(WLD_Map *map, int region_idx, float cam_x, float cam
         if (already_visited) continue;  
         visited_regions[num_visited++] = current;  
           
-        // NUEVO: Buscar sectores anidados que contengan el punto actual del rayo
-        // Esto permite detectar cajas/bidones a lo largo del camino
-        for (int i = 0; i < map->num_regions; i++) {
-            if (i == current) continue;
-            if (!map->regions[i] || !map->regions[i]->active) continue;
+        // Añadir regiones anidadas pre-calculadas
+        WLD_Region_Optimized *opt_current = &optimized_regions[current];
+        for (int i = 0; i < opt_current->num_nested_regions; i++) {
+            int nested = opt_current->nested_regions[i];
             
-            // Verificar si ya está en la lista
-            int already_in_list = 0;
+            int already_visited_nested = 0;
             for (int j = 0; j < num_visited; j++) {
-                if (visited_regions[j] == i) {
-                    already_in_list = 1;
+                if (visited_regions[j] == nested) {
+                    already_visited_nested = 1;
                     break;
                 }
             }
-            if (already_in_list) continue;
             
-            // Verificar si esta región contiene el punto actual del rayo
-            if (point_in_region(cam_x, cam_y, i, map)) {
-                if (num_to_visit < 256) {
-                    regions_to_visit[num_to_visit++] = i;
-                }
+            if (!already_visited_nested && num_to_visit < 256) {
+                regions_to_visit[num_to_visit++] = nested;
             }
         }
           
@@ -2238,6 +2233,99 @@ void debug_complex_wall_detection(WLD_Map *map, int region_idx, int adjacent_idx
     }  
       
     printf("=== FIN DEBUG ===\n\n");  
+}
+
+
+// Calcular regiones anidadas después de asignar back_region
+void wld_calculate_nested_regions(WLD_Map *map)
+{
+    // DEBUG: Mostrar types de regiones
+    printf("DEBUG: Types de regiones (primeras 21):\n");
+    for (int i = 0; i < map->num_regions && i < 21; i++) {
+        if (map->regions[i]) {
+            printf("  Región %d: type=%d\n", i, map->regions[i]->type);
+        }
+    }
+    
+    // Pre-calcular regiones anidadas basándose en type
+    // Regiones con type más alto están más anidadas
+    int processed_pairs[256][256] = {0};
+    
+    for (int i = 0; i < map->num_walls; i++) {
+        WLD_Wall *wall = map->walls[i];
+        if (!wall) continue;
+        
+        int front = wall->front_region;
+        int back = wall->back_region;
+        
+        if (back < 0 || back >= map->num_regions) continue;
+        if (front < 0 || front >= map->num_regions) continue;
+        if (front == back) continue;
+        
+        // Evitar procesar el mismo par dos veces
+        if (front < 256 && back < 256) {
+            if (processed_pairs[front][back] || processed_pairs[back][front]) continue;
+            processed_pairs[front][back] = 1;
+        }
+        
+        // Determinar cuál región es padre basándose en TAMAÑO
+        // La región con MÁS paredes es el padre (más grande)
+        int parent_idx, child_idx;
+        int front_walls = optimized_regions[front].num_wall_ptrs;
+        int back_walls = optimized_regions[back].num_wall_ptrs;
+        
+        if (front_walls > back_walls) {
+            // front tiene más paredes, es el padre
+            parent_idx = front;
+            child_idx = back;
+        } else if (back_walls > front_walls) {
+            // back tiene más paredes, es el padre
+            parent_idx = back;
+            child_idx = front;
+        } else {
+            // Mismo número de paredes, usar back_region como criterio
+            parent_idx = back;
+            child_idx = front;
+        }
+        
+        WLD_Region_Optimized *parent = &optimized_regions[parent_idx];
+        
+        int already_added = 0;
+        for (int j = 0; j < parent->num_nested_regions; j++) {
+            if (parent->nested_regions[j] == child_idx) {
+                already_added = 1;
+                break;
+            }
+        }
+        
+        if (!already_added && parent->num_nested_regions < 64) {
+            parent->nested_regions[parent->num_nested_regions++] = child_idx;
+        }
+    }
+    
+    // DEBUG: Mostrar primeras relaciones
+    printf("DEBUG: Primeras relaciones anidadas (primeras 50 paredes):\n");
+    for (int i = 0; i < map->num_walls && i < 50; i++) {
+        WLD_Wall *wall = map->walls[i];
+        if (!wall) continue;
+        if (wall->back_region >= 0 && wall->front_region >= 0) {
+            printf("  Pared %d: front=%d, back=%d -> %d anidada en %d\n", 
+                   i, wall->front_region, wall->back_region, 
+                   wall->front_region, wall->back_region);
+        }
+    }
+    
+    // DEBUG
+    printf("DEBUG: Regiones anidadas:\n");
+    for (int i = 0; i < map->num_regions && i < 21; i++) {
+        if (optimized_regions[i].num_nested_regions > 0) {
+            printf("  Región %d: ", i);
+            for (int j = 0; j < optimized_regions[i].num_nested_regions; j++) {
+                printf("%d ", optimized_regions[i].nested_regions[j]);
+            }
+            printf("\n");
+        }
+    }
 }
 
 int64_t libmod_wld_set_wld_fov(INSTANCE *my, int64_t *params) {  
