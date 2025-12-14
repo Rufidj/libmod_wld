@@ -109,7 +109,8 @@ typedef struct {
     int floor_tex;  
     int ceil_tex;  
     int fade;  
-} WLD_Region;  // Total: 32 bytes  
+} WLD_Region;  // Total: 28 bytes - NO MODIFICAR (se lee con fread)
+  
 
 typedef struct {  
     WLD_Region *original_region;
@@ -120,9 +121,35 @@ typedef struct {
     // Pre-computed nested sectors
     int nested_regions[64];
     int num_nested_regions;
+    
+    // Sistema de jerarquía de regiones (estilo DIV VPE)
+    // MOVIDO AQUÍ para no alterar el tamaño de WLD_Region
+    int above_region;  // Índice de región superior (-1 si no hay)
+    int below_region;  // Índice de región inferior (-1 si no hay)
 } WLD_Region_Optimized;
   
 #pragma pack(pop)
+
+// VDraw structure - similar to DIV VPE
+// Represents a drawable element (wall or object) found during scan phase
+typedef struct {
+    int type;           // 0=simple wall, 1=complex wall (portal), 2=object
+    WLD_Wall *wall;     // Wall pointer (if type 0 or 1)
+    int region_idx;     // Region this element belongs to
+    int left_col;       // Left screen column
+    int right_col;      // Right screen column
+    float distance;     // Distance from camera
+    float px1, px2;     // Projected distances at left and right
+    
+    // Clipping info
+    int clip_top;
+    int clip_bottom;
+    
+    // For complex walls (portals)
+    int adjacent_region;
+} WLD_VDraw;
+
+#define MAX_VDRAWS 4096  // Maximum drawable elements per frame
   
 typedef struct {  
     int num_points;  

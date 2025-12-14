@@ -1386,6 +1386,114 @@ static float min_distance_between_segments(
     return min_dist;  
 }
 
+// ============================================================================
+// Scan recursivo de regiones (estilo DIV VPE ScanRegion)
+// ============================================================================
+
+void scan_region_recursive(WLD_Map *map, int region_idx, int col,
+                           float ray_origin_x, float ray_origin_y,  // Posición actual del rayo
+                           float ray_dir_x, float ray_dir_y,
+                           float accumulated_distance,  // Distancia ya recorrida
+                           int *region_stamps, int current_stamp,
+                           WLD_VDraw *vdraws, int *num_vdraws,
+                           int clip_top, int clip_bottom,
+                           int screen_w, int screen_h)
+{
+    // Evitar procesar la misma región dos veces
+    if (region_stamps[region_idx] >= current_stamp) return;
+    region_stamps[region_idx] = current_stamp;
+    
+    // Verificar límite de VDraws
+    if (*num_vdraws >= MAX_VDRAWS) return;
+    
+    WLD_Region_Optimized *opt_region = &optimized_regions[region_idx];
+    
+    // Buscar pared más cercana en esta región para esta columna
+    WLD_Wall *closest_wall = NULL;
+    float closest_distance = 999999.0f;
+    int closest_adjacent = -1;
+    
+    for (int i = 0; i < opt_region->num_wall_ptrs; i++) {
+        WLD_Wall *wall = opt_region->wall_ptrs[i];
+        if (!wall) continue;
+        
+        int p1 = wall->p1;
+        int p2 = wall->p2;
+        if (p1 < 0 || p1 >= map->num_points || p2 < 0 || p2 >= map->num_points) continue;
+        if (!map->points[p1] || !map->points[p2]) continue;
+        
+        float x1 = map->points[p1]->x;
+        float y1 = map->points[p1]->y;
+        float x2 = map->points[p2]->x;
+        float y2 = map->points[p2]->y;
+        
+        // CLAVE: Buscar desde la posición actual del rayo, no desde la cámara
+        float t = intersect_ray_segment(ray_dir_x, ray_dir_y, ray_origin_x, ray_origin_y,
+                                       x1, y1, x2, y2);
+        
+        if (t > 0.001f && t < closest_distance) {
+            closest_distance = t;
+            closest_wall = wall;
+            
+            // Determinar región adyacente
+            int front = wall->front_region;
+            int back = wall->back_region;
+            closest_adjacent = (front == region_idx) ? back : front;
+        }
+    }
+    
+    // Si encontramos pared, añadir VDraw
+    if (closest_wall && closest_distance < 999999.0f) {
+        WLD_VDraw *vd = &vdraws[*num_vdraws];
+        vd->wall = closest_wall;
+        vd->region_idx = region_idx;
+        vd->left_col = col;
+        vd->right_col = col;  // Por ahora una columna
+        vd->distance = accumulated_distance + closest_distance;  // Distancia total
+        vd->px1 = vd->px2 = accumulated_distance + closest_distance;
+        vd->clip_top = clip_top;
+        vd->clip_bottom = clip_bottom;
+        vd->adjacent_region = closest_adjacent;
+        
+        // Tipo: simple o complejo (portal)
+        vd->type = (closest_adjacent >= 0) ? 1 : 0;
+        
+        (*num_vdraws)++;
+        
+        // Si es portal, continuar recursivamente en región adyacente
+        if (closest_adjacent >= 0 && closest_adjacent < map->num_regions) {
+            // Calcular nueva posición del rayo después de atravesar el portal
+            float new_ray_x = ray_origin_x + ray_dir_x * closest_distance;
+            float new_ray_y = ray_origin_y + ray_dir_y * closest_distance;
+            float new_accumulated = accumulated_distance + closest_distance;
+            
+            scan_region_recursive(map, closest_adjacent, col,
+                                new_ray_x, new_ray_y,  // Nueva posición
+                                ray_dir_x, ray_dir_y,
+                                new_accumulated,  // Nueva distancia acumulada
+                                region_stamps, current_stamp,
+                                vdraws, num_vdraws,
+                                clip_top, clip_bottom,
+                                screen_w, screen_h);
+        }
+    }
+    
+    // Escanear regiones anidadas
+    for (int n = 0; n < opt_region->num_nested_regions; n++) {
+        int nested_idx = opt_region->nested_regions[n];
+        if (nested_idx >= 0 && nested_idx < map->num_regions) {
+            scan_region_recursive(map, nested_idx, col,
+                                ray_origin_x, ray_origin_y,  // Misma posición
+                                ray_dir_x, ray_dir_y,
+                                accumulated_distance,  // Misma distancia
+                                region_stamps, current_stamp,
+                                vdraws, num_vdraws,
+                                clip_top, clip_bottom,
+                                screen_w, screen_h);
+        }
+    }
+}
+
 void render_wld(WLD_Map *map, int screen_w, int screen_h)    
 {    
     if (!map || !map->loaded) return;    
@@ -1414,9 +1522,83 @@ void render_wld(WLD_Map *map, int screen_w, int screen_h)
     if (current_region < 0) {    
         printf("DEBUG: Cámara fuera de todas las regiones válidas\n");    
         return;    
-    }    
+    }
+    
+    // ============================================================================
+    // NUEVO: Sistema Scan/Draw separado (estilo DIV VPE)
+    // ============================================================================
+    
+    // Array de VDraws para almacenar elementos a dibujar
+    static WLD_VDraw vdraws[MAX_VDRAWS];
+    int num_vdraws = 0;
+    
+    // Sistema de stamps para evitar procesar regiones múltiples veces
+    static int current_stamp = 0;
+    static int region_stamps[256];  // Asumiendo máximo 256 regiones
+    current_stamp++;
+    
+    // ============================================================================
+    // FASE 1: SCAN - Raycasting recursivo usando scan_region_recursive()
+    // ============================================================================
         
-    // Renderizar cada columna con raycasting continuo    
+    // Escanear cada columna para construir lista de VDraws
+    for (int col = 0; col < screen_w; col++) {    
+        float angle_offset = ((float)col - screen_w/2.0f) * wld_angle_step;
+        float ray_dir_x = cos(camera.angle + angle_offset);    
+        float ray_dir_y = sin(camera.angle + angle_offset);
+        
+        // Inicializar clipping vertical para esta columna  
+        int clip_top = 0;  
+        int clip_bottom = screen_h - 1;
+        
+        // Resetear stamps para esta columna
+        for (int i = 0; i < map->num_regions; i++) {
+            region_stamps[i] = current_stamp - 1;
+        }
+        
+        // Escanear recursivamente desde la región actual
+        scan_region_recursive(map, current_region, col,
+                            camera.x, camera.y,  // Posición inicial del rayo (cámara)
+                            ray_dir_x, ray_dir_y,
+                            0.0f,  // Distancia acumulada inicial = 0
+                            region_stamps, current_stamp,
+                            vdraws, &num_vdraws,
+                            clip_top, clip_bottom,
+                            screen_w, screen_h);
+    }
+    
+    
+    // ============================================================================
+    // FASE 2: DRAW - Renderizar VDraws en orden correcto
+    // ============================================================================
+    
+    // Función de comparación para ordenar VDraws por distancia (de lejos a cerca)
+    int compare_vdraws(const void *a, const void *b) {
+        WLD_VDraw *vd_a = (WLD_VDraw *)a;
+        WLD_VDraw *vd_b = (WLD_VDraw *)b;
+        
+        // Ordenar de lejos a cerca (painter's algorithm)
+        if (vd_a->distance > vd_b->distance) return -1;
+        if (vd_a->distance < vd_b->distance) return 1;
+        return 0;
+    }
+    
+    // Ordenar VDraws por distancia
+    if (num_vdraws > 0) {
+        qsort(vdraws, num_vdraws, sizeof(WLD_VDraw), compare_vdraws);
+    }
+    
+    // Renderizar VDraws en orden (de lejos a cerca)
+    for (int i = 0; i < num_vdraws; i++) {
+        WLD_VDraw *vd = &vdraws[i];
+        
+        // Renderizar esta pared con suelo/techo
+        render_wall_column(map, vd->wall, vd->region_idx, vd->left_col,
+                          screen_w, screen_h, camera.x, camera.y, camera.z,
+                          vd->distance, vd->clip_top, vd->clip_bottom);
+    }
+    
+    /* CÓDIGO ORIGINAL COMENTADO - Mantener por referencia
     for (int col = 0; col < screen_w; col++) {    
         float angle_offset = ((float)col - screen_w/2.0f) * wld_angle_step;  // Usar wld_angle_step    
         float ray_dir_x = cos(camera.angle + angle_offset);    
@@ -1432,7 +1614,8 @@ void render_wld(WLD_Map *map, int screen_w, int screen_h)
         int max_depth = 16; // Aumentado para permitir más profundidad  
         int depth = 0;    
             
-        while (depth < max_depth && total_distance < max_render_distance) {    
+        while (depth < max_depth && total_distance < max_render_distance) {
+    
             WLD_Wall *hit_wall;    
             int hit_region, adjacent_region;    
             float hit_distance;    
@@ -1458,40 +1641,53 @@ void render_wld(WLD_Map *map, int screen_w, int screen_h)
                                             total_distance, 1.0f, clip_top, clip_bottom, angle_offset);  
                 }
                 
-                // Renderizar regiones anidadas visibles en esta columna
+                
+                
+                // DESHABILITADO: Regiones anidadas
+                // Las cajas aparecen pero con clipping incorrecto y sin texturas
+                // El problema puede ser que scan_walls_from_region() marca regiones como visitadas
+                // o que render_wall_column() necesita información adicional
+                /*
                 WLD_Region_Optimized *opt_sector = &optimized_regions[current_sector];
+                
                 for (int n = 0; n < opt_sector->num_nested_regions; n++) {
                     int nested_idx = opt_sector->nested_regions[n];
                     
-                    // Lanzar rayo para ver si intersecta con esta región anidada
                     WLD_Wall *nested_wall;
                     int nested_hit_region, nested_adjacent;
                     float nested_distance;
                     
+                    float ray_origin_x = camera.x + ray_dir_x * total_distance;
+                    float ray_origin_y = camera.y + ray_dir_y * total_distance;
+                    
                     scan_walls_from_region(map, nested_idx,
-                                          camera.x, camera.y,
+                                          ray_origin_x, ray_origin_y,
                                           ray_dir_x, ray_dir_y,
                                           &nested_distance,
                                           &nested_wall, &nested_hit_region, &nested_adjacent);
                     
-                    if (nested_wall && nested_distance < total_distance && nested_distance > 0.001f) {
-                        // DEBUG: Solo para primera columna
-                        if (col == screen_w / 2) {
-                            printf("DEBUG col %d: Nested region %d found wall at distance %.2f (current: %.2f)\n",
-                                   col, nested_idx, nested_distance, total_distance);
+                    if (nested_wall && nested_distance < hit_distance && nested_distance > 0.001f) {
+                        WLD_Region *nested_region = map->regions[nested_idx];
+                        if (nested_region && nested_region->active) {
+                            float full_distance = total_distance + nested_distance;
+                            float corrected_distance = full_distance * cos(angle_offset);
+                            if (corrected_distance < 0.1f) corrected_distance = 0.1f;
+                            
+                            float ceil_height = nested_region->ceil_height - camera.z;
+                            int projected_ceil = screen_h / 2 - (int)(ceil_height / corrected_distance * wld_focal_length);
+                            
+                            float floor_height = nested_region->floor_height - camera.z;
+                            int projected_floor = screen_h / 2 - (int)(floor_height / corrected_distance * wld_focal_length);
+                            
+                            int new_clip_top = (projected_ceil > clip_top) ? projected_ceil : clip_top;
+                            int new_clip_bottom = (projected_floor < clip_bottom) ? projected_floor : clip_bottom;
+                            
+                            if (new_clip_top < new_clip_bottom) {
+                                render_wall_column(map, nested_wall, nested_hit_region, col,
+                                                  screen_w, screen_h, camera.x, camera.y, camera.z,
+                                                  full_distance, new_clip_top, new_clip_bottom);
+                            }
                         }
-                        
-                        // Esta región anidada está más cerca que la pared actual
-                        float nested_corrected = nested_distance * cos(angle_offset);
-                        if (nested_corrected < 0.1f) nested_corrected = 0.1f;
-                        
-                        render_wall_column(map, nested_wall, nested_hit_region, col,
-                                          screen_w, screen_h, camera.x, camera.y, camera.z,
-                                          nested_distance, clip_top, clip_bottom);
-                    } else if (col == screen_w / 2 && opt_sector->num_nested_regions > 0) {
-                        // DEBUG: Ver por qué no encuentra
-                        printf("DEBUG col %d: Nested region %d - wall=%p, dist=%.2f, total=%.2f\n",
-                               col, nested_idx, (void*)nested_wall, nested_distance, total_distance);
                     }
                 }
                     
@@ -1624,7 +1820,8 @@ void render_wld(WLD_Map *map, int screen_w, int screen_h)
                 break; // No hay más paredes    
             }    
         }    
-    }    
+    }
+    */ // FIN CÓDIGO ORIGINAL COMENTADO
 }
 
 int wld_find_region(WLD_Map *map, float x, float y, int discard_region)  
