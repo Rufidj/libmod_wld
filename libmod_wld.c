@@ -1167,12 +1167,24 @@ void scan_walls_from_region(WLD_Map *map, int region_idx, float cam_x, float cam
     }  
 }
 
-void render_floor_and_ceiling(WLD_Map *map, WLD_Region *region, int col,  
+void render_floor_and_ceiling(WLD_Map *map, WLD_Region *region, int region_idx, int col,  
                                      int screen_w, int screen_h, int wall_top, int wall_bottom,  
                                      float cam_x, float cam_y, float cam_z, float distance,  
                                      float fog_factor, int clip_top, int clip_bottom, float angle_offset)  
 {  
     if (!region) return;  
+    
+    // Verificar si esta región es anidada (para aplicar point_in_region check)
+    int is_nested_region = 0;
+    for (int r = 0; r < map->num_regions && !is_nested_region; r++) {
+        WLD_Region_Optimized *opt = &optimized_regions[r];
+        for (int n = 0; n < opt->num_nested_regions; n++) {
+            if (opt->nested_regions[n] == region_idx) {
+                is_nested_region = 1;
+                break;
+            }
+        }
+    }
       
     // Precalcular coseno para corrección de fisheye
     float cos_angle = cos(angle_offset);
@@ -1198,6 +1210,11 @@ void render_floor_and_ceiling(WLD_Map *map, WLD_Region *region, int col,
                   
                 float hit_x = cam_x + cos(camera.angle + angle_offset) * corrected_distance;  
                 float hit_y = cam_y + sin(camera.angle + angle_offset) * corrected_distance;  
+                
+                // CRÍTICO: Para regiones anidadas, verificar si el punto está dentro
+                if (is_nested_region && !point_in_region(hit_x, hit_y, region_idx, map)) {
+                    continue;  // Skip este píxel si está fuera de la región
+                }
                   
                 int tex_x = ((int)(hit_x * 0.5f)) % ceil_tex->width;  
                 int tex_y = ((int)(hit_y * 0.5f)) % ceil_tex->height;  
@@ -1243,6 +1260,11 @@ void render_floor_and_ceiling(WLD_Map *map, WLD_Region *region, int col,
                   
                 float hit_x = cam_x + cos(camera.angle + angle_offset) * corrected_distance;  
                 float hit_y = cam_y + sin(camera.angle + angle_offset) * corrected_distance;  
+                
+                // CRÍTICO: Para regiones anidadas, verificar si el punto está dentro
+                if (is_nested_region && !point_in_region(hit_x, hit_y, region_idx, map)) {
+                    continue;  // Skip este píxel si está fuera de la región
+                }
                   
                 int tex_x = ((int)(hit_x * 0.5f)) % floor_tex->width;  
                 int tex_y = ((int)(hit_y * 0.5f)) % floor_tex->height;  
@@ -1351,7 +1373,7 @@ void render_wall_column(WLD_Map *map, WLD_Wall *wall, int region_idx,
     int eff_top = (original_FTop < clip_top) ? clip_top : (original_FTop > clip_bottom) ? clip_bottom : original_FTop;
     int eff_bot = (original_FBot < clip_top) ? clip_top : (original_FBot > clip_bottom) ? clip_bottom : original_FBot;
     
-    render_floor_and_ceiling(map, region, col, screen_w, screen_h, eff_top, eff_bot, 
+    render_floor_and_ceiling(map, region, region_idx, col, screen_w, screen_h, eff_top, eff_bot, 
                             cam_x, cam_y, cam_z, distance, 1.0f, clip_top, clip_bottom, angle_offset);
 }
 
@@ -1478,18 +1500,50 @@ void scan_region_recursive(WLD_Map *map, int region_idx, int col,
         }
     }
     
-    // Escanear regiones anidadas
+    
+    // Escanear regiones anidadas - ESCANEAR SUS PAREDES DIRECTAMENTE
+    // En lugar de hacer llamada recursiva, escaneamos las paredes de las regiones anidadas
+    // como si fueran objetos sólidos visibles desde fuera
     for (int n = 0; n < opt_region->num_nested_regions; n++) {
         int nested_idx = opt_region->nested_regions[n];
-        if (nested_idx >= 0 && nested_idx < map->num_regions) {
-            scan_region_recursive(map, nested_idx, col,
-                                ray_origin_x, ray_origin_y,  // Misma posición
-                                ray_dir_x, ray_dir_y,
-                                accumulated_distance,  // Misma distancia
-                                region_stamps, current_stamp,
-                                vdraws, num_vdraws,
-                                clip_top, clip_bottom,
-                                screen_w, screen_h);
+        if (nested_idx < 0 || nested_idx >= map->num_regions) continue;
+        
+        WLD_Region_Optimized *nested_opt = &optimized_regions[nested_idx];
+        
+        // Escanear todas las paredes de la región anidada
+        for (int w = 0; w < nested_opt->num_wall_ptrs; w++) {
+            WLD_Wall *wall = nested_opt->wall_ptrs[w];
+            if (!wall) continue;
+            
+            int p1 = wall->p1;
+            int p2 = wall->p2;
+            if (p1 < 0 || p1 >= map->num_points || p2 < 0 || p2 >= map->num_points) continue;
+            if (!map->points[p1] || !map->points[p2]) continue;
+            
+            float x1 = map->points[p1]->x;
+            float y1 = map->points[p1]->y;
+            float x2 = map->points[p2]->x;
+            float y2 = map->points[p2]->y;
+            
+            // Intersección del rayo con esta pared
+            float t = intersect_ray_segment(ray_dir_x, ray_dir_y, ray_origin_x, ray_origin_y, x1, y1, x2, y2);
+            
+            if (t > 0.001f) {  // Intersección válida
+                // Añadir esta pared a la lista de VDraws
+                if (*num_vdraws >= MAX_VDRAWS) continue;
+                
+                WLD_VDraw *vd = &vdraws[*num_vdraws];
+                vd->wall = wall;
+                vd->region_idx = nested_idx;  // La región anidada
+                vd->left_col = col;
+                vd->distance = accumulated_distance + t;
+                vd->clip_top = clip_top;
+                vd->clip_bottom = clip_bottom;
+                vd->adjacent_region = wall->back_region;  // Puede ser -1 o la región padre
+                vd->type = (wall->back_region >= 0) ? 1 : 0;
+                
+                (*num_vdraws)++;
+            }
         }
     }
 }
@@ -1523,6 +1577,33 @@ void render_wld(WLD_Map *map, int screen_w, int screen_h)
         printf("DEBUG: Cámara fuera de todas las regiones válidas\n");    
         return;    
     }
+    
+    // DEBUG: Mostrar info de cámara y región actual
+    static int debug_frame_count = 0;
+    if (debug_frame_count % 60 == 0) {  // Cada 60 frames (~1 segundo)
+        WLD_Region *curr_reg = map->regions[current_region];
+        printf("\n=== DEBUG CÁMARA ===\n");
+        printf("Posición: x=%.1f, y=%.1f, z=%.1f\n", camera.x, camera.y, camera.z);
+        printf("Región actual: #%d\n", current_region);
+        printf("  floor_height=%d, ceil_height=%d (altura=%d)\n", 
+               curr_reg->floor_height, curr_reg->ceil_height, 
+               curr_reg->ceil_height - curr_reg->floor_height);
+        printf("  floor_tex=%d, ceil_tex=%d\n", curr_reg->floor_tex, curr_reg->ceil_tex);
+        
+        // Mostrar regiones anidadas visibles
+        WLD_Region_Optimized *opt = &optimized_regions[current_region];
+        if (opt->num_nested_regions > 0) {
+            printf("  Regiones anidadas (%d):\n", opt->num_nested_regions);
+            for (int n = 0; n < opt->num_nested_regions && n < 5; n++) {
+                int nested_idx = opt->nested_regions[n];
+                WLD_Region *nested = map->regions[nested_idx];
+                printf("    #%d: floor=%d, ceil=%d, floor_tex=%d\n",
+                       nested_idx, nested->floor_height, nested->ceil_height, nested->floor_tex);
+            }
+        }
+        printf("====================\n\n");
+    }
+    debug_frame_count++;
     
     // ============================================================================
     // NUEVO: Sistema Scan/Draw separado (estilo DIV VPE)
@@ -1636,7 +1717,7 @@ void render_wld(WLD_Map *map, int screen_w, int screen_h)
                 // NUEVO: Renderizar suelo y techo del sector actual  
                 WLD_Region *current_sector_region = map->regions[current_sector];  
                 if (current_sector_region && current_sector_region->active) {  
-                    render_floor_and_ceiling(map, current_sector_region, col, screen_w, screen_h,  
+                    render_floor_and_ceiling(map, current_sector_region, current_sector, col, screen_w, screen_h,  
                                             clip_top, clip_bottom, camera.x, camera.y, camera.z,  
                                             total_distance, 1.0f, clip_top, clip_bottom, angle_offset);  
                 }
@@ -2537,29 +2618,71 @@ void wld_calculate_nested_regions(WLD_Map *map)
         }
     }
     
-    // DEBUG: Mostrar primeras relaciones
-    printf("DEBUG: Primeras relaciones anidadas (primeras 50 paredes):\n");
-    for (int i = 0; i < map->num_walls && i < 50; i++) {
-        WLD_Wall *wall = map->walls[i];
-        if (!wall) continue;
-        if (wall->back_region >= 0 && wall->front_region >= 0) {
-            printf("  Pared %d: front=%d, back=%d -> %d anidada en %d\n", 
-                   i, wall->front_region, wall->back_region, 
-                   wall->front_region, wall->back_region);
+    
+    // ========================================================================
+    // DEBUG COMPLETO: Información de regiones anidadas
+    // ========================================================================
+    printf("\n");
+    printf("================================================================================\n");
+    printf("DEBUG: INFORMACIÓN COMPLETA DE REGIONES ANIDADAS\n");
+    printf("================================================================================\n");
+    
+    int total_nested = 0;
+    for (int i = 0; i < map->num_regions; i++) {
+        if (optimized_regions[i].num_nested_regions > 0) {
+            total_nested += optimized_regions[i].num_nested_regions;
         }
     }
     
-    // DEBUG
-    printf("DEBUG: Regiones anidadas:\n");
-    for (int i = 0; i < map->num_regions && i < 21; i++) {
-        if (optimized_regions[i].num_nested_regions > 0) {
-            printf("  Región %d: ", i);
-            for (int j = 0; j < optimized_regions[i].num_nested_regions; j++) {
-                printf("%d ", optimized_regions[i].nested_regions[j]);
+    printf("Total de regiones con sectores anidados: %d\n", total_nested);
+    printf("\n");
+    
+    for (int i = 0; i < map->num_regions; i++) {
+        WLD_Region_Optimized *opt = &optimized_regions[i];
+        
+        if (opt->num_nested_regions > 0) {
+            WLD_Region *parent = map->regions[i];
+            printf("REGIÓN PADRE #%d:\n", i);
+            printf("  Altura: floor=%d, ceil=%d (altura=%d)\n", 
+                   parent->floor_height, parent->ceil_height, 
+                   parent->ceil_height - parent->floor_height);
+            printf("  Texturas: floor_tex=%d, ceil_tex=%d\n", 
+                   parent->floor_tex, parent->ceil_tex);
+            printf("  Sectores anidados (%d):\n", opt->num_nested_regions);
+            
+            for (int j = 0; j < opt->num_nested_regions; j++) {
+                int nested_idx = opt->nested_regions[j];
+                WLD_Region *nested = map->regions[nested_idx];
+                WLD_Region_Optimized *nested_opt = &optimized_regions[nested_idx];
+                
+                printf("\n    SECTOR ANIDADO #%d:\n", nested_idx);
+                printf("      Altura: floor=%d, ceil=%d (altura=%d)\n", 
+                       nested->floor_height, nested->ceil_height,
+                       nested->ceil_height - nested->floor_height);
+                printf("      Texturas región: floor_tex=%d, ceil_tex=%d\n", 
+                       nested->floor_tex, nested->ceil_tex);
+                printf("      Número de paredes: %d\n", nested_opt->num_wall_ptrs);
+                
+                // Mostrar texturas de cada pared
+                printf("      Paredes:\n");
+                for (int w = 0; w < nested_opt->num_wall_ptrs && w < 10; w++) {
+                    WLD_Wall *wall = nested_opt->wall_ptrs[w];
+                    if (wall) {
+                        printf("        Pared: type=%d, texture=%d, texture_top=%d, texture_bot=%d, front=%d, back=%d\n",
+                               wall->type, wall->texture, wall->texture_top, wall->texture_bot,
+                               wall->front_region, wall->back_region);
+                    }
+                }
+                if (nested_opt->num_wall_ptrs > 10) {
+                    printf("        ... y %d paredes más\n", nested_opt->num_wall_ptrs - 10);
+                }
             }
             printf("\n");
         }
     }
+    
+    printf("================================================================================\n");
+    printf("\n");
 }
 
 int64_t libmod_wld_set_wld_fov(INSTANCE *my, int64_t *params) {  
@@ -2575,36 +2698,13 @@ int64_t libmod_wld_set_wld_fov(INSTANCE *my, int64_t *params) {
     return 1;  
 }
 
+
 void validate_and_fix_portals(WLD_Map *map) {  
-    if (!map) return;  
-      
-    int fixed_count = 0;  
-    for (int i = 0; i < map->num_walls; i++) {  
-        WLD_Wall *wall = map->walls[i];  
-        if (!wall) continue;  
-          
-        // Si es portal pero tiene textura en medio, corregir  
-        if (wall->type == 1 && wall->texture > 0) {  
-            printf("CORRECCIÓN: Portal[%d] tenía texture=%d, estableciendo a 0\n",   
-                   i, wall->texture);  
-            wall->texture = 0;  
-            fixed_count++;  
-        }  
-          
-        // Asegurar que portales tengan texturas top/bot  
-        if (wall->type == 1 && wall->back_region >= 0) {  
-            if (wall->texture_top == 0 && map->regions[wall->front_region]) {  
-                wall->texture_top = map->regions[wall->front_region]->ceil_tex;  
-            }  
-            if (wall->texture_bot == 0 && map->regions[wall->front_region]) {  
-                wall->texture_bot = map->regions[wall->front_region]->floor_tex;  
-            }  
-        }  
-    }  
-      
-    if (fixed_count > 0) {  
-        printf("DEBUG: Se corrigieron %d portales con textura incorrecta\n", fixed_count);  
-    }  
+    // FUNCIÓN DESHABILITADA TEMPORALMENTE
+    // Para depurar problemas de renderizado de sectores anidados
+    // sin que las texturas sean modificadas
+    printf("DEBUG: validate_and_fix_portals DESHABILITADA - no se modifican texturas\n");
+    return;
 }
 
 void export_map_to_text(WLD_Map *map, const char *filename) {  
@@ -2650,12 +2750,15 @@ void render_wall_section(WLD_Map *map, int texture_index, int col,
     if (y_start >= y_end) return;  
       
     if (texture_index <= 0) {  
-        // No dibujar nada si no hay textura (evitar colores de debug)
+        // No hay textura, no renderizar
         return;  
     }  
       
     GRAPH *tex_graph = get_tex_image(texture_index);  
-    if (!tex_graph) return;  
+    if (!tex_graph) {
+        // Textura no encontrada
+        return;  
+    }
       
     int tex_x = (int)(wall_u * tex_graph->width) % tex_graph->width;  
     if (tex_x < 0) tex_x = 0;  
@@ -2835,7 +2938,7 @@ void render_complex_wall_section(WLD_Map *map, WLD_Wall *wall, WLD_Region *regio
           
     // Renderizar piso y techo de la región ACTUAL (hasta el portal)  
     // Usamos cc_y (techo proyectado) y cf_y (suelo proyectado) como límites  
-    render_floor_and_ceiling(map, region, col, screen_w, screen_h,      
+    render_floor_and_ceiling(map, region, region_idx, col, screen_w, screen_h,      
                             cc_y, cf_y, cam_x, cam_y, cam_z,      
                             hit_distance, fog_factor, clip_top, clip_bottom, angle_offset);      
 }

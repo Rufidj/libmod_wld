@@ -266,7 +266,7 @@ extern float intersect_ray_segment(float ray_dir_x, float ray_dir_y, float cam_x
 extern int wld_find_region(WLD_Map *map, float x, float y, int discard_region);
 // Función exportada para BennuGD2  
 extern int64_t libmod_heightmap_render_wld_3d(INSTANCE *my, int64_t *params);
-extern void render_floor_and_ceiling(WLD_Map *map, WLD_Region *region, int col,  
+extern void render_floor_and_ceiling(WLD_Map *map, WLD_Region *region, int region_idx, int col,  
                                      int screen_w, int screen_h, int wall_top, int wall_bottom,  
                                      float cam_x, float cam_y, float cam_z, float distance,  
                                      float fog_factor, int clip_top, int clip_bottom, float angle_offset); 
